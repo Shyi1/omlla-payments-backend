@@ -1,153 +1,65 @@
-(function() {
-    'use strict';
+const express = require('express');
+const admin = require('firebase-admin');
+const dotenv = require('dotenv');
+const cors = require('cors');
 
-    const tg = window.Telegram.WebApp;
-    tg.expand();
+// Load environment variables
+dotenv.config();
 
-    const BACKEND_URL = "https://omlla-payments-backend.onrender.com";
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-    const firebaseConfig = { databaseURL: "https://omlla-game-default-rtdb.firebaseio.com" };
-    if (!firebase.apps.length) { firebase.initializeApp(firebaseConfig); }
-    const db = firebase.database();
-
-    const user = tg.initDataUnsafe?.user || { id: 'dev_user', first_name: 'Investor' };
-    const userRef = db.ref('players/' + user.id);
-
-    let player = {
-        points: 0,
-        energy: 1000,
-        maxEnergy: 1000,
-        totalTaps: 0,
-        referrals: 0,
-        name: user.first_name
-    };
-
-    function updateUI() {
-        const balanceEl = document.getElementById('balance');
-        if(balanceEl) balanceEl.innerText = Math.floor(player.points).toLocaleString();
-
-        const energyTextEl = document.getElementById('energy-text');
-        if(energyTextEl) energyTextEl.innerText = `${player.energy}/1000`;
-
-        const energyBarEl = document.getElementById('energy-bar');
-        if(energyBarEl) energyBarEl.style.width = (player.energy / 10) + "%";
-        
-        const nameEl = document.getElementById('user-name');
-        if(nameEl) nameEl.innerText = player.name;
-
-        const tapsEl = document.getElementById('prof-taps');
-        if(tapsEl) tapsEl.innerText = player.totalTaps.toLocaleString();
-
-        const refsEl = document.getElementById('prof-refs');
-        if(refsEl) refsEl.innerText = player.referrals;
-    }
-
-    userRef.on('value', (snap) => {
-        const data = snap.val();
-        if (data) {
-            player = { ...player, ...data };
-            updateUI();
-        } else {
-            userRef.set(player);
-        }
+// Initialize Firebase Admin SDK
+if (!admin.apps.length) {
+    admin.initializeApp({
+        credential: admin.credential.cert({
+            projectId: process.env.FIREBASE_PROJECT_ID,
+            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+            // Format private key correctly for cloud hosting environments
+            privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+        }),
+        databaseURL: process.env.FIREBASE_DB_URL
     });
+}
 
-    const tapTrigger = document.getElementById('tap-trigger');
-    if (tapTrigger) {
-        tapTrigger.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            if (player.energy >= 1) {
-                player.points += 1;
-                player.energy -= 1;
-                player.totalTaps += 1;
-                updateUI();
+const db = admin.database();
 
-                userRef.update({
-                    points: player.points,
-                    energy: player.energy,
-                    totalTaps: player.totalTaps,
-                    name: user.first_name
-                });
+// Root endpoint for Health Check
+app.get('/', (req, res) => {
+    res.send('OMLLA Backend is Live 🚀');
+});
 
-                if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
-
-                const touch = e.touches[0];
-                createTapEffect(touch.clientX, touch.clientY);
-            }
+// Create Payment Request Endpoint
+app.post('/api/create-payment', async (req, res) => {
+    try {
+        const { userId, amount, packageName, solAmount } = req.body;
+        const paymentId = 'pay_' + Date.now();
+        
+        // Save payment details to Firebase under pending_payments
+        await db.ref('pending_payments/' + paymentId).set({
+            userId, 
+            amount, 
+            solAmount, 
+            packageName, 
+            status: 'pending', 
+            createdAt: Date.now()
         });
-    }
 
-    function createTapEffect(x, y) {
-        const p = document.createElement('div');
-        p.className = 'tap-effect';
-        p.innerText = '+1';
-        p.style.left = x + 'px';
-        p.style.top = y + 'px';
-        document.body.appendChild(p);
-        setTimeout(() => p.remove(), 800);
-    }
-
-    window.doTask = function(url, reward) {
-        tg.openLink(url);
-        setTimeout(() => {
-            tg.showConfirm("Did you complete the task?", (confirmed) => {
-                if (confirmed) {
-                    player.points += reward;
-                    updateUI();
-                    userRef.update({ points: player.points, name: user.first_name });
-                    tg.showAlert(`Success: +${reward} O$ added`);
-                }
-            });
-        }, 3000);
-    };
-
-    window.showTab = function(pageId, navElement) {
-        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-        const targetPage = document.getElementById(pageId + '-page');
-        if (targetPage) targetPage.classList.add('active');
-
-        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-        navElement.classList.add('active');
-
-        if (pageId === 'rating') loadLeaderboard();
-    };
-
-    function loadLeaderboard() {
-        db.ref('players').orderByChild('points').limitToLast(10).once('value', (snap) => {
-            const listContainer = document.getElementById('leaderboard-list');
-            if (!listContainer) return;
-            
-            let html = '';
-            let ranking = [];
-            snap.forEach(child => { ranking.push(child.val()); });
-            ranking.reverse().forEach((p, i) => {
-                html += `
-                    <div class="stat-card" style="display:flex; justify-content:space-between;">
-                        <span>#${i+1} ${p.name || 'Investor'}</span>
-                        <span style="color:#FFD700; font-weight:bold;">${Math.floor(p.points).toLocaleString()} O$</span>
-                    </div>`;
-            });
-            listContainer.innerHTML = html;
+        // Return payment ID and the Admin Wallet address from environment variables
+        res.json({
+            success: true,
+            paymentId: paymentId,
+            merchantWallet: process.env.ADMIN_WALLET
         });
+    } catch (error) {
+        console.error("Payment Creation Error:", error.message);
+        res.status(500).json({ success: false, error: error.message });
     }
+});
 
-    setInterval(() => {
-        if (player.energy < 1000) {
-            player.energy += 1;
-            updateUI();
-            userRef.child('energy').set(player.energy);
-        }
-    }, 3000);
-
-    window.copyReferral = function() {
-        const link = `https://t.me/OMLLA_Coin_bot?start=${user.id}`;
-        const el = document.createElement('textarea');
-        el.value = link;
-        document.body.appendChild(el);
-        el.select();
-        document.execCommand('copy');
-        document.body.removeChild(el);
-        tg.showAlert("Referral Link Copied!");
-    };
-
-})();
+// Start the server on the port defined by Render or default to 10000
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
