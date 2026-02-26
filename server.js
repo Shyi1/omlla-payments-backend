@@ -6,6 +6,7 @@ const solanaWeb3 = require('@solana/web3.js');
 // Connect to Solana Mainnet
 const connection = new solanaWeb3.Connection("https://api.mainnet-beta.solana.com", "confirmed");
 
+// Initialize Firebase
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.FIREBASE_PROJECT_ID,
@@ -20,7 +21,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Create Order
+// Endpoint 1: Create Order
 app.post('/api/create-payment', async (req, res) => {
     try {
         const { userId, amount, pack, tokens } = req.body;
@@ -37,7 +38,7 @@ app.post('/api/create-payment', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// Secure Verification (Anti-Cheat)
+// Endpoint 2: Blockchain Verification (Anti-Cheat)
 app.post('/api/verify-payment', async (req, res) => {
     try {
         const { paymentId, transactionSignature } = req.body;
@@ -49,22 +50,22 @@ app.post('/api/verify-payment', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Invalid Order' });
         }
 
-        // Verify transaction on the real blockchain
+        // Verify on Solana Blockchain
         const tx = await connection.getParsedTransaction(transactionSignature, {
             maxSupportedTransactionVersion: 0
         });
 
         if (!tx) {
-            return res.status(400).json({ success: false, error: 'Transaction not found. Wait 10s and retry.' });
+            return res.status(400).json({ success: false, error: 'TX not found. Wait 10s.' });
         }
 
-        // Success: Update order and give coins from Server-side
+        // Securely add points from server-side only
         await orderRef.update({ status: 'completed', signature: transactionSignature });
         await db.ref(`players/${order.userId}/points`).transaction(p => (p || 0) + order.tokens);
 
         res.json({ success: true });
-    } catch (e) { res.status(500).json({ success: false, error: 'Blockchain check failed' }); }
+    } catch (e) { res.status(500).json({ success: false, error: 'Blockchain error' }); }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+app.listen(PORT, () => console.log(`Secure Server on ${PORT}`));
